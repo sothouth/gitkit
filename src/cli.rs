@@ -15,7 +15,9 @@ pub struct Cli {
     pub target: String,
     #[clap(value_enum, default_value_t = Remove::Nothing)]
     pub remove: Remove,
-    #[clap(long, short, default_value_t = true)]
+    #[clap(long, short)]
+    pub remote: Option<String>,
+    #[clap(long, short)]
     pub keep: bool,
 }
 

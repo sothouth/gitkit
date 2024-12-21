@@ -6,6 +6,8 @@ pub enum Error {
     Git(#[from] git2::Error),
     #[error(transparent)]
     Io(#[from] std::io::Error),
+    #[error("cmd '{0}' failed with: {1}")]
+    Execute(String, std::process::ExitStatus),
 }
 
 pub mod cli;
