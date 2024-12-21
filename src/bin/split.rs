@@ -40,12 +40,20 @@ fn split(cli: &Cli) -> Result<()> {
 
     let repo = git::Repository::open(repo_path)?;
 
-    for status in repo.statuses(None)?.into_iter() {
-        if status.status() != git::Status::CURRENT {
+    let mut options = git::StatusOptions::new();
+    options.include_untracked(true);
+
+    for status in repo.statuses(Some(&mut options))?.into_iter() {
+        let code = status.status();
+        if !code.is_ignored() && code != git::Status::CURRENT {
             return Err(git::Error::new(
                 git::ErrorCode::Uncommitted,
                 git::ErrorClass::Filter,
-                "you have unstaged changes",
+                format!(
+                    "you have unstaged changes: {:?} {:?}",
+                    status.path(),
+                    status.status()
+                ),
             )
             .into());
         }
