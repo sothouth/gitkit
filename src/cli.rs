@@ -12,9 +12,10 @@ pub fn cli() -> &'static Cli {
 pub struct Cli {
     pub repo: String,
     pub path: String,
-    pub target: String,
     #[clap(value_enum, default_value_t = Remove::Nothing)]
     pub remove: Remove,
+    #[clap(long, short)]
+    pub local: Option<String>,
     #[clap(long, short)]
     pub remote: Option<String>,
     #[clap(long, short)]

@@ -1,4 +1,8 @@
-use std::{fs, path::PathBuf, process::Command};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 use ::git2 as git;
 
@@ -13,26 +17,29 @@ fn main() {
 }
 
 const BRANCH_PREFIX: &str = "temp_split_";
+const REMOTE_PREFIX: &str = "temp_split_";
 
 fn split(cli: &Cli) -> Result<()> {
     println!("{:#?}", cli);
 
     let repo_pb = &PathBuf::from(&cli.repo);
     let path_pb = &repo_pb.join(&cli.path);
-    let target_pb = &PathBuf::from(&cli.target);
+    let target_pb = &cli.local.as_ref().map(PathBuf::from);
 
     assert!(repo_pb.is_dir() && repo_pb.exists());
     assert!(path_pb.is_dir() && path_pb.exists());
 
-    if !target_pb.exists() {
-        fs::create_dir_all(target_pb)?;
-    } else {
-        assert!(target_pb.is_dir());
+    if let Some(target_pb) = target_pb {
+        if !target_pb.exists() {
+            fs::create_dir_all(target_pb)?;
+        } else {
+            assert!(target_pb.is_dir());
+        }
     }
 
     let repo_path = &fs::canonicalize(repo_pb)?;
     let path_path = &fs::canonicalize(path_pb)?;
-    let target_path = &fs::canonicalize(target_pb)?;
+    let target_path = &target_pb.as_ref().map(fs::canonicalize).transpose()?;
 
     // fit for windows
     let path_rel = &cli.path.replace('\\', "/");
@@ -62,15 +69,17 @@ fn split(cli: &Cli) -> Result<()> {
         }
     }
 
-    match git::Repository::open(target_path) {
-        Ok(_) => (),
-        Err(e) if e.code() == git::ErrorCode::NotFound => {
-            git::Repository::init(target_path)?;
-        }
-        Err(e) => {
-            return Err(e.into());
-        }
-    };
+    if let Some(target_path) = target_path {
+        match git::Repository::open(target_path) {
+            Ok(_) => (),
+            Err(e) if e.code() == git::ErrorCode::NotFound => {
+                git::Repository::init(target_path)?;
+            }
+            Err(e) => {
+                return Err(e.into());
+            }
+        };
+    }
 
     let temp_branch_name = &{
         let mut temp_branch_name = BRANCH_PREFIX.to_string();
@@ -81,6 +90,13 @@ fn split(cli: &Cli) -> Result<()> {
             temp_branch_name.push('_');
         }
         temp_branch_name
+    };
+    let temp_remote_name = &{
+        let mut temp_remote_name = REMOTE_PREFIX.to_string();
+        while repo.find_remote(&temp_remote_name).is_ok() {
+            temp_remote_name.push('_');
+        }
+        temp_remote_name
     };
 
     println!("waiting for subtree to finish ...");
@@ -100,57 +116,87 @@ fn split(cli: &Cli) -> Result<()> {
 
     println!("subtree finished.");
 
-    println!(
-        "local adding '{}' to '{:?}' ...",
-        temp_branch_name, target_path
-    );
+    if let Some(target_path) = target_path {
+        println!(
+            "local adding '{}' to '{:?}' ...",
+            temp_branch_name, target_path
+        );
 
-    execute(
-        Command::new("git")
-            .current_dir(target_path)
-            .arg("pull")
-            .arg(repo_git)
-            .arg(temp_branch_name),
-    )?;
+        execute(
+            Command::new("git")
+                .current_dir(target_path)
+                .arg("pull")
+                .arg(repo_git)
+                .arg(temp_branch_name),
+        )?;
 
-    println!("local added.");
-
-    branch.delete()?;
-
-    drop(branch);
-    drop(repo);
+        println!("local added.");
+    }
 
     if let Some(remote) = &cli.remote {
         println!("remote adding '{}' to '{}' ...", temp_branch_name, remote);
 
-        execute(
-            Command::new("git")
-                .current_dir(target_path)
-                .arg("remote")
-                .arg("add")
-                .arg("origin")
-                .arg(remote),
-        )?;
+        if let Some(target_path) = target_path {
+            execute(
+                Command::new("git")
+                    .current_dir(target_path)
+                    .arg("remote")
+                    .arg("add")
+                    .arg("origin")
+                    .arg(remote),
+            )?;
 
-        execute(
-            Command::new("git")
-                .current_dir(target_path)
-                .arg("branch")
-                .arg("-M")
-                .arg("main"),
-        )?;
+            execute(
+                Command::new("git")
+                    .current_dir(target_path)
+                    .arg("branch")
+                    .arg("-M")
+                    .arg("main"),
+            )?;
 
-        execute(
-            Command::new("git")
-                .current_dir(target_path)
-                .arg("push")
-                .arg("-u")
-                .arg("origin")
-                .arg("main"),
-        )?;
+            execute(
+                Command::new("git")
+                    .current_dir(target_path)
+                    .arg("push")
+                    .arg("-u")
+                    .arg("origin")
+                    .arg("main"),
+            )?;
+        } else {
+            execute(
+                Command::new("git")
+                    .current_dir(repo_path)
+                    .arg("remote")
+                    .arg("add")
+                    .arg(temp_remote_name)
+                    .arg(remote),
+            )?;
+
+            execute(
+                Command::new("git")
+                    .current_dir(repo_path)
+                    .arg("push")
+                    .arg(temp_remote_name)
+                    .arg(format!("{temp_branch_name}:main")),
+            )?;
+
+            execute(
+                Command::new("git")
+                    .current_dir(repo_path)
+                    .arg("remote")
+                    .arg("remove")
+                    .arg(temp_remote_name),
+            )?;
+        }
 
         println!("remote added.");
     }
+
+    branch.delete()?;
+    println!("branch {temp_branch_name} deleted.");
+
+    drop(branch);
+    drop(repo);
 
     match cli.remove {
         Remove::Nothing => {
@@ -276,11 +322,14 @@ fn execute(cmd: &mut Command) -> Result<()> {
 }
 
 #[cfg(target_os = "windows")]
-fn fuck_windows(path: &PathBuf) -> Result<String> {
+fn fuck_windows(path: &Path) -> Result<String> {
     Ok(format!(
         "file:///{}",
         path.to_str()
-            .unwrap()
+            .ok_or(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "invalid char in path",
+            ))?
             .to_string()
             .trim_start_matches(r"\\?\")
             .replace('\\', "/")
@@ -288,7 +337,7 @@ fn fuck_windows(path: &PathBuf) -> Result<String> {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn fuck_windows(path: &PathBuf) -> Result<String> {
+fn fuck_windows(path: &Path) -> Result<String> {
     Ok(path
         .to_str()
         .ok_or(std::io::Error::new(
